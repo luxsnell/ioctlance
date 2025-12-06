@@ -444,6 +444,8 @@ def analyze_driver(driver_path):
     globals.proj.hook_symbol("ZwQueryValueKey", hooks.HookZwQueryValueKey(cc=globals.mycc))
     globals.proj.hook_symbol("NdisRegisterProtocolDriver", hooks.HookNdisRegisterProtocolDriver(cc=globals.mycc))
     globals.proj.hook_symbol("ZwTerminateProcess", hooks.HookZwTerminateProcess(cc=globals.mycc))
+    globals.proj.hook_symbol("RtlQueryRegistryValues", hooks.HookRtlQueryRegistryValues(cc=globals.mycc))
+
 
     # Only hook for phase 2 to hunt vulnerabilities.
     globals.proj.hook_symbol("ExAllocatePool", hooks.HookExAllocatePool(cc=globals.mycc))

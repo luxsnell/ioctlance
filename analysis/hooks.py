@@ -636,3 +636,133 @@ class HookObReferenceObjectByHandle(angr.SimProcedure):
         if (globals.star_ps_process_type is not None) and self.state.solver.eval(ObjectType == globals.star_ps_process_type) and utils.tainted_buffer(Handle):
             self.state.globals['tainted_eprocess'] += (str(object), )
         return 0
+
+class HookRtlQueryRegistryValues(angr.SimProcedure):
+    def get_entry_context(state: angr.sim_state.SimState, Table, Index):
+        entry_ptr = Table + Index * (state.mem.RTL_QUERY_REGISTRY_TABLE._type.size // 8)
+        table_entry = state.mem[entry_ptr].RTL_QUERY_REGISTRY_TABLE
+        return table_entry.EntryContext
+
+    def search_for_termdd_like_vuln(originalState: angr.sim_state.SimState, directTableEntries, start_of_table_addr, end_of_table_addr):
+        TAINTED_BUFFER_ALLOC = "TaintBufferInsideUnicodeString"
+        ret_addr = hex(originalState.callstack.ret_addr)
+        # Termdd-like vulnerability.
+        # 1- We need to see if, by creating a REG_SZ key, we can control other 
+        for index in range(0, len(directTableEntries)):
+            state = originalState.copy()
+            entry_context_index = directTableEntries[index]["Index"]
+            entry_context_name = directTableEntries[index]["Name"]            
+            entry_context_view = HookRtlQueryRegistryValues.get_entry_context(state, start_of_table_addr, entry_context_index)
+
+            # First we need to assume that the EntryContext points to a UNICODE_STRING with a NULL Buffer
+            # RtlQueryRegistryValues will allocate a buffer for us 
+            unicode_str_view = entry_context_view.deref.UNICODE_STRING
+            if state.solver.is_false(unicode_str_view.Buffer.resolved == 0):
+                continue
+
+            # We "simulate" the buffer allocation with a symbolic variable that can be used to easily spot a taint
+            unicode_str_view.Buffer = claripy.BVS(f'{TAINTED_BUFFER_ALLOC}_{ret_addr}', state.arch.bits)
+
+            # We now need to check if a subsequent EntryContext can be controlled
+            for subsequentIndex in range(index + 1, len(directTableEntries)):
+                subsequent_entry_context_index = directTableEntries[subsequentIndex]["Index"]
+                subsequent_entry_context_name = directTableEntries[subsequentIndex]["Name"]
+                subsequent_entry_context_view = HookRtlQueryRegistryValues.get_entry_context(state, start_of_table_addr, subsequent_entry_context_index)
+                if TAINTED_BUFFER_ALLOC not in str(subsequent_entry_context_view.deref.uint32_t.resolved):
+                    continue
+
+                vuln_title = f"buffer overflow"
+                vuln_description = f"RtlQueryRegistryValues - Controllable first 4 bytes of EntryContext"
+                vuln_parameters = {
+                    "Vulnerable entry index" : entry_context_index,
+                    "Vulnerable entry name" : entry_context_name, 
+                    "Vulnerable EntryContext" : str(entry_context_view.resolved), 
+                    "Controllable entry index" : subsequent_entry_context_index,
+                    "Controllable entry name" : subsequent_entry_context_name, 
+                    "Controllable EntryContext" : str(subsequent_entry_context_view.deref.uint32_t._addr), 
+                }
+                vuln_others = {"return address": ret_addr}
+                utils.print_vuln(vuln_title, vuln_description, state, vuln_parameters, vuln_others)
+
+                # If the controllable EntryContext is inside the table
+                if state.solver.is_true(subsequent_entry_context_view.resolved < end_of_table_addr):
+                    vuln_title = f"buffer overflow"
+                    vuln_description = f"RtlQueryRegistryValues - Controllable binary EntryContext {subsequent_entry_context_index} before the start of the table or in the middle of it"
+                    vuln_parameters = {                        
+                        "Vulnerable entry index" : subsequent_entry_context_index,
+                        "Vulnerable entry name" : subsequent_entry_context_name, 
+                        "EntryContext" : str(subsequent_entry_context_view.resolved), 
+                        'Address of the start of the table': str(start_of_table_addr),
+                        'Address of the end of the table': str(end_of_table_addr)
+                    }
+                    vuln_others = {"return address": ret_addr}
+                    utils.print_vuln(vuln_title, vuln_description, state, vuln_parameters, vuln_others)
+
+    def run(self, RelativeTo, Path, QueryTable, Context, Environment):
+        ret_addr = hex(self.state.callstack.ret_addr)
+        ptr_size = self.state.arch.bytes
+
+        directTableEntries = []
+        indexWhile = -1
+        while True:
+            # Each RtlQueryRegistryTable entry is 7 pointers long:
+            indexWhile  += 1
+            assert(self.state.mem.RTL_QUERY_REGISTRY_TABLE._type.size == (0x38 * 8))
+            entry_ptr = QueryTable + indexWhile * (self.state.mem.RTL_QUERY_REGISTRY_TABLE._type.size // 8)
+            table_entry = self.state.mem[entry_ptr].RTL_QUERY_REGISTRY_TABLE
+
+            try:
+                query_routine = table_entry.QueryRoutine.resolved
+                name_ptr = table_entry.Name.uint64_t.resolved
+            except:
+                break
+
+            # Stop if terminated
+            if self.state.solver.is_true(query_routine == 0) and self.state.solver.is_true(name_ptr == 0):
+                break
+
+            try:
+                flags = table_entry.Flags.uint32_t.resolved
+                name = table_entry.Name.deref.wstring.concrete
+                entry_context = table_entry.EntryContext
+            except:
+                break
+            
+            # Check for vulnerable combination
+            # RTL_QUERY_REGISTRY_DIRECT (0x20) and not RTL_QUERY_REGISTRY_TYPECHECK (0x00000100)
+            has_direct = self.state.solver.is_true(flags & 0x20 != 0)
+            has_typecheck = self.state.solver.is_true(flags & 0x00000100 != 0)
+            if (not has_direct) or has_typecheck:
+                continue
+
+            if self.state.solver.is_true(entry_context == 0):
+                continue
+
+            directTableEntries.append({
+                "Index" : indexWhile,
+                "Name": name,
+                #"EntryContext": entry_context,
+            })
+
+            # win32k-like vulnerability
+            # If we have an EntryContext that is assumed (by the driver) to have a default value (already in memory) different from zero an attacker might be able
+            # to use a REG_BINARY key to overwrite memory that hosts the EntryContext
+            # We consider only possible lengths that are greater than 4 bytes
+            magnitude = entry_context.deref.int32_t
+            valid_positive_magnitude = self.state.solver.is_true((magnitude.resolved & 0x80000000) == 0) and self.state.solver.is_true(magnitude.resolved > 4)
+            valid_negative_magnitude = self.state.solver.is_true((magnitude.resolved & 0x80000000) != 0) and self.state.solver.is_true(-magnitude.resolved > 4)
+            if valid_positive_magnitude or valid_negative_magnitude:
+                vuln_title = f"buffer overflow"
+                vuln_description = f"RtlQueryRegistryValues - Potential overflow due to non-zero DWORD on first bytes of entry {indexWhile}"
+                vuln_parameters = {
+                    "Vulnerable entry index" : indexWhile,
+                    "Vulnerable entry name" : name, 
+                    "EntryContext" : str(entry_context.resolved),                     
+                    'NonStringDataSize': magnitude.concrete,
+                }
+                vuln_others = {"return address": ret_addr}
+                utils.print_vuln(vuln_title, vuln_description, self.state, vuln_parameters, vuln_others)
+        
+        end_of_table_addr = QueryTable +  indexWhile * (self.state.mem.RTL_QUERY_REGISTRY_TABLE._type.size // 8)
+        HookRtlQueryRegistryValues.search_for_termdd_like_vuln(self.state, directTableEntries, QueryTable, end_of_table_addr)
+        return 0

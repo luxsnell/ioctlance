@@ -373,6 +373,17 @@ typedef struct _OBJECT_ATTRIBUTES {
   PVOID SecurityQualityOfService;
 } OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
 typedef CONST OBJECT_ATTRIBUTES *PCOBJECT_ATTRIBUTES;
+
+typedef struct _RTL_QUERY_REGISTRY_TABLE {
+    PVOID QueryRoutine;
+    ULONG Flags;
+    PWSTR Name;
+    PVOID EntryContext;
+    ULONG DefaultType;
+    PVOID DefaultData;
+    ULONG DefaultLength;
+    ULONG __DUMMY__;
+} RTL_QUERY_REGISTRY_TABLE, *PRTL_QUERY_REGISTRY_TABLE;
 '''
 
 angr.types.register_types(angr.types.parse_types(ALL_TYPES_STRING))

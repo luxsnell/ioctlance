@@ -62,34 +62,45 @@ def print_vuln(title, description, state, parameters, others):
     if state.addr < 0x1337:
         return
 
-    # Deduplicate vulnerabilities using (title, state.addr, IoControlCode).
-    IoControlCode = hex(state.solver.eval(globals.IoControlCode))
-    if (title, state.addr, str(IoControlCode)) not in globals.vulns_unique:
-        globals.vulns_unique.add((title, state.addr, str(IoControlCode)))
-        
+    data = {}
+    data['title'] = f'{title}'
+    data['description'] = f'{description}'
+    data['state'] = str(state)
+    data['parameters'] = parameters
+
+    IoControlCode = None 
+    vuln_nnuple = None
+    if (globals.IoControlCode is None):
+        vuln_nnuple = (title, state.addr)
+    else:
+        IoControlCode = hex(state.solver.eval(globals.IoControlCode))
+        vuln_nnuple = (title, state.addr, str(IoControlCode))
         # Evaluate the target buffers.
         SystemBuffer = hex(state.solver.eval(globals.SystemBuffer))
         Type3InputBuffer = hex(state.solver.eval(globals.Type3InputBuffer))
         UserBuffer = hex(state.solver.eval(globals.UserBuffer))
         InputBufferLength = hex(state.solver.eval(globals.InputBufferLength))
         OutputBufferLength = hex(state.solver.eval(globals.OutputBufferLength))
-        
+    
         # Set the information of the vulnerability.
-        data = {}
-        data['title'] = f'{title}'
-        data['description'] = f'{description}'
-        data['state'] = str(state)
         data['eval'] = {'IoControlCode': IoControlCode, 'SystemBuffer': SystemBuffer, 'Type3InputBuffer': Type3InputBuffer, 'UserBuffer': UserBuffer, 'InputBufferLength': InputBufferLength, 'OutputBufferLength': OutputBufferLength}
-        data['parameters'] = parameters
-        data['others'] = others
-        if 'tainted_ProbeForRead' in state.globals and len(state.globals['tainted_ProbeForRead']) > 0:
-            data['others']['ProbeForRead'] = state.globals['tainted_ProbeForRead']
-        if 'tainted_ProbeForWrite' in state.globals and len(state.globals['tainted_ProbeForWrite']) > 0:
-            data['others']['ProbeForWrite'] = state.globals['tainted_ProbeForWrite']
-        if 'tainted_MmIsAddressValid' in state.globals and len(state.globals['tainted_MmIsAddressValid']) > 0:
-            data['others']['MmIsAddressValid'] = state.globals['tainted_MmIsAddressValid']
-        print(json.dumps(data, indent=4), '\n')
-        globals.vulns_info.append(data)
+    
+    
+    if vuln_nnuple in globals.vulns_unique:
+        return
+    
+    globals.vulns_unique.add((title, state.addr))
+   
+    data['others'] = others
+    if 'tainted_ProbeForRead' in state.globals and len(state.globals['tainted_ProbeForRead']) > 0:
+        data['others']['ProbeForRead'] = state.globals['tainted_ProbeForRead']
+    if 'tainted_ProbeForWrite' in state.globals and len(state.globals['tainted_ProbeForWrite']) > 0:
+        data['others']['ProbeForWrite'] = state.globals['tainted_ProbeForWrite']
+    if 'tainted_MmIsAddressValid' in state.globals and len(state.globals['tainted_MmIsAddressValid']) > 0:
+        data['others']['MmIsAddressValid'] = state.globals['tainted_MmIsAddressValid']
+    
+    print(json.dumps(data, indent=4), '\n')
+    globals.vulns_info.append(data)
 
 def print_info(msg):
     print(f'[Info] {msg}\n')

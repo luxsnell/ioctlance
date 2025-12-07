@@ -172,6 +172,8 @@ class HookMmGetSystemRoutineAddress(angr.SimProcedure):
 
         hooks = {
             "ZwQueryInformationProcess": HookZwQueryInformationProcess,
+            "RtlQueryRegistryValuesEx": HookRtlQueryRegistryValues,
+            "RtlQueryRegistryValues": HookRtlQueryRegistryValues,
         }
 
         for name, proc in hooks.items():
